@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GeoGuard - Flood Risk Intelligence</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; }
+        #map { height: 100vh; width: 100%; }
+        .info-panel { position: absolute; top: 20px; right: 20px; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); z-index: 1000; max-width: 300px; }
+        .info-panel h2 { font-size: 18px; margin-bottom: 15px; }
+        .zone-marker { width: 40px; height: 40px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
+        .alert-box { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: #F44336; color: white; padding: 15px 30px; border-radius: 8px; z-index: 1001; display: none; font-weight: bold; }
+        .btn { background: #2196F3; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin: 5px 0; width: 100%; }
+        .btn:hover { background: #1976D2; }
+        .legend { background: white; padding: 10px; border-radius: 5px; }
+        .legend-item { display: flex; align-items: center; margin: 5px 0; }
+        .legend-color { width: 20px; height: 20px; border-radius: 50%; margin-right: 10px; }
+    </style>
+</head>
+<body>
+    <div id="alert" class="alert-box"></div>
+    <div id="map"></div>
+    <div class="info-panel">
+        <h2>🛡️ GeoGuard</h2>
+        <div id="zone-info">
+            <p>Click a zone to view risk details</p>
+        </div>
+        <button class="btn" onclick="getMyLocation()">📍 Check My Location Risk</button>
+        <button class="btn" onclick="showEvacuation()">🚨 Show Evacuation Route</button>
+        <div class="legend" style="margin-top: 15px;">
+            <div class="legend-item"><div class="legend-color" style="background: #4CAF50;"></div><span>Low Risk</span></div>
+            <div class="legend-item"><div class="legend-color" style="background: #FFC107;"></div><span>Moderate Risk</span></div>
+            <div class="legend-item"><div class="legend-color" style="background: #FF9800;"></div><span>High Risk</span></div>
+            <div class="legend-item"><div class="legend-color" style="background: #F44336;"></div><span>Critical Risk</span></div>
+        </div>
+    </div>
+
+    <script>
+        const map = L.map('map').setView([13.0827, 80.2707], 11);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap'
+        }).addTo(map);
+
+        let zones = [];
+        let userMarker = null;
+        let routeLine = null;
+
+        function getRiskColor(risk) {
+            const colors = { Low: '#4CAF50', Moderate: '#FFC107', High: '#FF9800', Critical: '#F44336' };
+            return colors[risk] || '#999';
+        }
+
+        function showZoneInfo(zone) {
+            document.getElementById('zone-info').innerHTML = `
+                <h3>${zone.name}</h3>
+                <p><strong>Risk Level:</strong> <span style="color: ${getRiskColor(zone.risk)}">${zone.risk}</span></p>
+                <p><strong>Rainfall:</strong> ${zone.rainfall} mm</p>
+                <p><strong>Water Level:</strong> ${zone.water_level}%</p>
+                <p><strong>Elevation:</strong> ${zone.elevation}m</p>
+            `;
+        }
+
+        function showAlert(message) {
+            const alert = document.getElementById('alert');
+            alert.textContent = message;
+            alert.style.display = 'block';
+            setTimeout(() => alert.style.display = 'none', 5000);
+        }
+
+        fetch('/api/zones')
+            .then(r => r.json())
+            .then(data => {
+                zones = data;
+                data.forEach(zone => {
+                    const icon = L.divIcon({
+                        className: 'zone-marker',
+                        html: `<div class="zone-marker" style="background: ${getRiskColor(zone.risk)}"></div>`,
+                        iconSize: [40, 40]
+                    });
+                    const marker = L.marker([zone.lat, zone.lng], { icon }).addTo(map);
+                    marker.bindPopup(`<b>${zone.name}</b><br>Risk: ${zone.risk}`);
+                    marker.on('click', () => showZoneInfo(zone));
+                });
+            });
+
+        function getMyLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(pos => {
+                    const { latitude, longitude } = pos.coords;
+                    if (userMarker) map.removeLayer(userMarker);
+                    userMarker = L.marker([latitude, longitude]).addTo(map)
+                        .bindPopup('Your Location').openPopup();
+                    map.setView([latitude, longitude], 13);
+                    
+                    const nearest = zones.reduce((prev, curr) => {
+                        const d = Math.sqrt(Math.pow(curr.lat - latitude, 2) + Math.pow(curr.lng - longitude, 2));
+                        return d < prev.dist ? { zone: curr, dist: d } : prev;
+                    }, { dist: Infinity });
+
+                    if (nearest.zone.risk === 'High' || nearest.zone.risk === 'Critical') {
+                        showAlert(`⚠️ ${nearest.zone.risk} Flood Risk detected near ${nearest.zone.name}. Please move to a safer zone.`);
+                    } else {
+                        showAlert(`✓ You are in a ${nearest.zone.risk} risk zone (${nearest.zone.name})`);
+                    }
+                });
+            }
+        }
+
+        function showEvacuation() {
+            fetch('/api/route')
+                .then(r => r.json())
+                .then(data => {
+                    if (routeLine) map.removeLayer(routeLine);
+                    routeLine = L.polyline(data.route, { color: 'blue', weight: 4 }).addTo(map);
+                    L.marker([data.shelter.lat, data.shelter.lng])
+                        .addTo(map)
+                        .bindPopup(`<b>🏥 ${data.shelter.name}</b>`).openPopup();
+                    map.fitBounds(routeLine.getBounds());
+                    showAlert('Safe evacuation route displayed. Follow the blue path.');
+                });
+        }
+    </script>
+</body>
+</html>
