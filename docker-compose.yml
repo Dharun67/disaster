@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:5.0
+    container_name: geoguard-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: geoguard
+    volumes:
+      - mongodb_data:/data/db
+      - ./sample-data.js:/docker-entrypoint-initdb.d/sample-data.js
+    networks:
+      - geoguard-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: geoguard-backend
+    ports:
+      - "5000:5000"
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/geoguard
+      PORT: 5000
+      NODE_ENV: production
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - geoguard-network
+    volumes:
+      - ./backend:/app
+    command: npm start
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: geoguard-ai
+    ports:
+      - "5001:5001"
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/geoguard
+      FLASK_ENV: production
+    depends_on:
+      - mongodb
+    networks:
+      - geoguard-network
+    volumes:
+      - ./ai-service:/app
+    command: python predictor.py
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: geoguard-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_API_URL: http://localhost:5000/api
+      REACT_APP_AI_URL: http://localhost:5001/api
+    depends_on:
+      - backend
+      - ai-service
+    networks:
+      - geoguard-network
+    volumes:
+      - ./frontend:/app
+    command: npm start
+
+volumes:
+  mongodb_data:
+
+networks:
+  geoguard-network:
+    driver: bridge
